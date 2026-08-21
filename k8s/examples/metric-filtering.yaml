@@ -1,0 +1,108 @@
+# =============================================================================
+# EXAMPLE ONLY - metric filtering for Datadog OpenMetrics autodiscovery.
+# This file is a reference. It does NOT change your running config.
+# Copy the relevant snippet into your pod annotation when you're ready.
+# =============================================================================
+#
+# Mental model: fewer metric names  ->  fewer custom metrics (timeseries).
+# The OpenMetrics check gives you 4 knobs, applied in this order:
+#   1. metrics            -> ALLOWLIST: only collect these (best lever)
+#   2. exclude_metrics    -> DENYLIST: collect everything except these
+#   3. exclude_labels     -> drop noisy tags (reduces per-metric fan-out)
+#   4. include_labels     -> keep only these tags (opposite of exclude_labels)
+#
+# Rule of thumb: prefer an ALLOWLIST (option 1). It is the single biggest
+# reduction and it is predictable - you pay only for what you name.
+
+# -----------------------------------------------------------------------------
+# OPTION A (RECOMMENDED): Allowlist - only collect the metrics you care about.
+# Supports exact names and regex. Everything else is dropped.
+# -----------------------------------------------------------------------------
+openmetrics_allowlist_example:
+  init_config: {}
+  instances:
+    - openmetrics_endpoint: "http://%%host%%:5122/metrics"
+      namespace: "restate"
+      metrics:
+        # exact metric names (without the 'restate.' Datadog prefix)
+        - restate_ingress_requests
+        - restate_num_partitions
+        - restate_partition_applied_lsn_lag
+        - restate_rocksdb_estimate_live_data_size_bytes
+        - restate_memory_pool_usage_bytes
+        # regex is allowed too (wildcard a family):
+        - "restate_bifrost_sequencer_.*"
+
+# -----------------------------------------------------------------------------
+# OPTION B: Denylist - collect everything EXCEPT the heavy/noisy families.
+# Useful when you mostly want the defaults but need to trim the biggest
+# cardinality drivers (rocksdb internals + tokio runtime fan-out).
+# -----------------------------------------------------------------------------
+openmetrics_denylist_example:
+  init_config: {}
+  instances:
+    - openmetrics_endpoint: "http://%%host%%:5122/metrics"
+      namespace: "restate"
+      metrics:
+        - ".*" # start from "everything"
+      exclude_metrics:
+        - "restate_rocksdb_.*"          # drops ~150 rocksdb internal metrics
+        - "restate_tokio_worker_.*"     # drops the runtime x25 fan-out
+        - ".*\\.quantile"                # drops the percentile (x4) series
+
+# -----------------------------------------------------------------------------
+# OPTION C: Keep metrics, but drop high-churn / high-cardinality TAGS.
+# This does not reduce the metric-name count, but it stops per-restart and
+# per-deploy churn from minting brand-new timeseries.
+# -----------------------------------------------------------------------------
+openmetrics_label_trim_example:
+  init_config: {}
+  instances:
+    - openmetrics_endpoint: "http://%%host%%:5122/metrics"
+      namespace: "restate"
+      metrics:
+        - ".*"
+      # Drop tags you never query on. 'endpoint' changes with pod IP,
+      # so excluding it removes churn on every pod restart.
+      exclude_labels:
+        - endpoint
+      # (Alternative) keep ONLY these tags and discard all others:
+      # include_labels:
+      #   - node_name
+      #   - cluster_name
+
+# -----------------------------------------------------------------------------
+# HOW TO APPLY IT (as a pod annotation - the form this cluster uses).
+# The check config becomes JSON inside the ad.datadoghq.com/<container>.checks
+# annotation. Below is Option A expressed as an annotation you would put on
+# the Restate pod template (container name must be 'restate').
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: Pod # illustrative snippet - real annotation goes on the StatefulSet/Deployment pod template
+metadata:
+  name: restate-annotation-illustration
+  annotations:
+    ad.datadoghq.com/restate.checks: |
+      {
+        "openmetrics": {
+          "init_config": {},
+          "instances": [
+            {
+              "openmetrics_endpoint": "http://%%host%%:5122/metrics",
+              "namespace": "restate",
+              "metrics": [
+                "restate_ingress_requests",
+                "restate_num_partitions",
+                "restate_partition_applied_lsn_lag",
+                "restate_rocksdb_estimate_live_data_size_bytes",
+                "restate_memory_pool_usage_bytes"
+              ],
+              "exclude_labels": ["endpoint"]
+            }
+          ]
+        }
+      }
+spec:
+  containers:
+    - name: restate
+      image: docker.restate.dev/restatedev/restate:1.7.5
