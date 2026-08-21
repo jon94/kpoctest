@@ -1,0 +1,78 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pg-init
+  namespace: powersync
+data:
+  init.sql: |
+    -- Enable logical replication publication that PowerSync expects.
+    CREATE PUBLICATION powersync FOR ALL TABLES;
+    -- A demo table so replication/sync rules have something to reference.
+    CREATE TABLE IF NOT EXISTS lists (
+      id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+      name text NOT NULL,
+      owner_id text
+    );
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pg-db
+  namespace: powersync
+  labels:
+    app: pg-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pg-db
+  template:
+    metadata:
+      labels:
+        app: pg-db
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          args: ["postgres", "-c", "wal_level=logical"]
+          env:
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              value: postgres
+            - name: POSTGRES_DB
+              value: postgres
+            - name: PGPORT
+              value: "5432"
+          ports:
+            - containerPort: 5432
+              name: postgres
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "postgres"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: init
+          configMap:
+            name: pg-init
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pg-db
+  namespace: powersync
+spec:
+  selector:
+    app: pg-db
+  ports:
+    - port: 5432
+      targetPort: 5432
+      name: postgres

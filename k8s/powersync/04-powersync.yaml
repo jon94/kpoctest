@@ -1,0 +1,110 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: powersync-config
+  namespace: powersync
+data:
+  service.yaml: |
+    replication:
+      connections:
+        - type: postgresql
+          uri: postgresql://postgres:postgres@pg-db:5432/postgres
+          sslmode: disable
+
+    storage:
+      type: mongodb
+      uri: mongodb://mongo:27017/powersync_demo
+
+    # PowerSync API server port
+    port: 80
+
+    sync_config:
+      path: /config/sync-config.yaml
+
+    client_auth:
+      # No real auth backend is required to expose metrics; keys are only
+      # fetched lazily when a client presents a token.
+      jwks_uri: http://127.0.0.1:6060/api/auth/keys
+      audience: ['powersync-dev', 'powersync']
+
+    # Enables the Prometheus-compatible metrics endpoint on :9090/metrics
+    telemetry:
+      prometheus_port: 9090
+      disable_telemetry_sharing: true
+
+    system:
+      logging:
+        level: info
+        format: text
+  sync-config.yaml: |
+    bucket_definitions:
+      global:
+        data:
+          - SELECT * FROM lists
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: powersync
+  namespace: powersync
+  labels:
+    app: powersync
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: powersync
+  template:
+    metadata:
+      labels:
+        app: powersync
+      annotations:
+        ad.datadoghq.com/powersync.checks: |
+          {
+            "openmetrics": {
+              "init_config": {},
+              "instances": [
+                {
+                  "openmetrics_endpoint": "http://%%host%%:9090/metrics",
+                  "namespace": "powersync",
+                  "metrics": [".*"]
+                }
+              ]
+            }
+          }
+    spec:
+      containers:
+        - name: powersync
+          image: journeyapps/powersync-service:latest
+          args: ["start", "-r", "unified"]
+          env:
+            - name: POWERSYNC_CONFIG_PATH
+              value: /config/service.yaml
+          ports:
+            - containerPort: 80
+              name: api
+            - containerPort: 9090
+              name: metrics
+          volumeMounts:
+            - name: config
+              mountPath: /config
+      volumes:
+        - name: config
+          configMap:
+            name: powersync-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: powersync
+  namespace: powersync
+spec:
+  selector:
+    app: powersync
+  ports:
+    - port: 80
+      targetPort: 80
+      name: api
+    - port: 9090
+      targetPort: 9090
+      name: metrics

@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo
+  namespace: powersync
+  labels:
+    app: mongo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongo
+  template:
+    metadata:
+      labels:
+        app: mongo
+    spec:
+      containers:
+        - name: mongo
+          image: mongo:7.0
+          args: ["--replSet", "rs0", "--bind_ip_all", "--quiet"]
+          ports:
+            - containerPort: 27017
+              name: mongo
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+          readinessProbe:
+            exec:
+              command:
+                - mongosh
+                - --quiet
+                - --eval
+                - "db.adminCommand('ping').ok"
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 8
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+  namespace: powersync
+spec:
+  selector:
+    app: mongo
+  ports:
+    - port: 27017
+      targetPort: 27017
+      name: mongo
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mongo-rs-init
+  namespace: powersync
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mongo-rs-init
+          image: mongo:7.0
+          command:
+            - bash
+            - -c
+            - >
+              for i in $(seq 1 30); do
+                if mongosh --host mongo:27017 --quiet --eval 'db.adminCommand("ping").ok' >/dev/null 2>&1; then break; fi;
+                echo "waiting for mongo..."; sleep 3;
+              done;
+              mongosh --host mongo:27017 --quiet --eval '
+                try { if (rs.status().ok) { quit(0); } } catch (e) {}
+                rs.initiate({_id: "rs0", version: 1, members: [{ _id: 0, host: "mongo:27017" }]});
+              '

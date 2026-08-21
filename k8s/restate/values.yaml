@@ -1,0 +1,30 @@
+env:
+  - name: RESTATE_LOG_FORMAT
+    value: json
+  - name: RESTATE_CLUSTER_NAME
+    value: helm-single-node
+  - name: RESTATE_ROCKSDB_TOTAL_MEMORY_SIZE
+    value: 384Mi
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+podAnnotations:
+  ad.datadoghq.com/restate.checks: |
+    {
+      "openmetrics": {
+        "init_config": {},
+        "instances": [
+          {
+            "openmetrics_endpoint": "http://%%host%%:5122/metrics",
+            "namespace": "restate",
+            "metrics": [".*"]
+          }
+        ]
+      }
+    }
